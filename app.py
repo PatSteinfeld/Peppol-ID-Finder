@@ -10,6 +10,10 @@ st.set_page_config(
 
 st.title("🔍 Peppol Endpoint Finder")
 
+# =====================================================
+# SETTINGS
+# =====================================================
+
 environment = st.radio(
     "Environment",
     ["PROD", "TEST"],
@@ -20,58 +24,40 @@ search_value = st.text_input(
     "Customer Name / VAT / Participant ID"
 )
 
+# =====================================================
+# API FUNCTION
+# =====================================================
 
 def search_peppol(search_term, env):
 
     if env == "PROD":
-        base_url = "https://directory.peppol.eu/search/1.0/json"
-    else:
-        base_url = "https://test-directory.peppol.eu/search/1.0/json"
-
-    all_matches = []
-    page = 0
-
-    while True:
-
         url = (
-            f"{base_url}?q={quote(search_term)}&page={page}"
+            f"https://directory.peppol.eu/search/1.0/json"
+            f"?q={quote(search_term)}"
+            f"&rpc=1000"
+        )
+    else:
+        url = (
+            f"https://test-directory.peppol.eu/search/1.0/json"
+            f"?q={quote(search_term)}"
+            f"&rpc=1000"
         )
 
-        response = requests.get(
-            url,
-            timeout=30,
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            }
-        )
+    response = requests.get(
+        url,
+        timeout=60,
+        headers={
+            "User-Agent": "Mozilla/5.0"
+        }
+    )
 
-        response.raise_for_status()
+    response.raise_for_status()
 
-        data = response.json()
+    return response.json()
 
-        matches = data.get("matches", [])
-
-        if not matches:
-            break
-
-        all_matches.extend(matches)
-
-        st.write(
-            f"Loaded page {page + 1} ({len(matches)} results)"
-        )
-
-        # API returns 20 results per page
-        if len(matches) < 20:
-            break
-
-        page += 1
-
-    return all_matches
-
-
-# ====================================
+# =====================================================
 # SINGLE SEARCH
-# ====================================
+# =====================================================
 
 if st.button("Search"):
 
@@ -79,9 +65,24 @@ if st.button("Search"):
 
         try:
 
-            matches = search_peppol(
+            data = search_peppol(
                 search_value,
                 environment
+            )
+
+            st.success(
+                f"Total Results Found: "
+                f"{data.get('total-result-count', 0)}"
+            )
+
+            st.info(
+                f"Returned By API: "
+                f"{data.get('used-result-count', 0)}"
+            )
+
+            matches = data.get(
+                "matches",
+                []
             )
 
             results = []
@@ -108,42 +109,51 @@ if st.button("Search"):
                     )
 
                     if names:
+
                         company_name = names[0].get(
                             "name",
                             ""
                         )
 
                 results.append({
-                    "Company Name": company_name,
-                    "Participant ID": participant.get(
-                        "value",
-                        ""
-                    ),
-                    "Scheme": participant.get(
-                        "scheme",
-                        ""
-                    ),
-                    "Country": match.get(
-                        "countryCode",
-                        ""
-                    ),
-                    "Doc Type Count": len(
+
+                    "Company Name":
+                        company_name,
+
+                    "Participant ID":
+                        participant.get(
+                            "value",
+                            ""
+                        ),
+
+                    "Scheme":
+                        participant.get(
+                            "scheme",
+                            ""
+                        ),
+
+                    "Country":
                         match.get(
-                            "docTypes",
-                            []
+                            "countryCode",
+                            ""
+                        ),
+
+                    "Document Types":
+                        len(
+                            match.get(
+                                "docTypes",
+                                []
+                            )
                         )
-                    )
+
                 })
 
             result_df = pd.DataFrame(results)
 
-            st.success(
-                f"{len(result_df)} result(s) found"
-            )
-
             st.dataframe(
                 result_df,
-                use_container_width=True
+                use_container_width=True,
+                height=600
             )
 
             csv = result_df.to_csv(
@@ -151,7 +161,7 @@ if st.button("Search"):
             )
 
             st.download_button(
-                "Download Results",
+                "⬇ Download Results",
                 csv,
                 "peppol_results.csv",
                 "text/csv"
@@ -159,15 +169,17 @@ if st.button("Search"):
 
         except Exception as e:
 
-            st.error(str(e))
+            st.error(
+                f"Error: {str(e)}"
+            )
 
-
-# ====================================
+# =====================================================
 # BULK SEARCH
-# ====================================
+# =====================================================
 
 st.divider()
-st.subheader("Bulk Upload")
+
+st.subheader("Bulk Search")
 
 uploaded_file = st.file_uploader(
     "Upload Excel or CSV",
@@ -181,13 +193,15 @@ if uploaded_file:
     else:
         df = pd.read_excel(uploaded_file)
 
+    st.write("Input Preview")
+
     st.dataframe(df)
 
     if st.button("Lookup All"):
 
         all_results = []
 
-        progress_bar = st.progress(0)
+        progress = st.progress(0)
 
         total_rows = len(df)
 
@@ -199,9 +213,14 @@ if uploaded_file:
 
             try:
 
-                matches = search_peppol(
+                data = search_peppol(
                     search_term,
                     environment
+                )
+
+                matches = data.get(
+                    "matches",
+                    []
                 )
 
                 if matches:
@@ -228,49 +247,97 @@ if uploaded_file:
                             )
 
                             if names:
+
                                 company_name = names[0].get(
                                     "name",
                                     ""
                                 )
 
                         all_results.append({
-                            "Search Value": search_term,
-                            "Company Name": company_name,
-                            "Participant ID": participant.get(
-                                "value",
-                                ""
-                            ),
-                            "Scheme": participant.get(
-                                "scheme",
-                                ""
-                            ),
-                            "Country": match.get(
-                                "countryCode",
-                                ""
-                            ),
-                            "Doc Type Count": len(
+
+                            "Search Value":
+                                search_term,
+
+                            "Company Name":
+                                company_name,
+
+                            "Participant ID":
+                                participant.get(
+                                    "value",
+                                    ""
+                                ),
+
+                            "Scheme":
+                                participant.get(
+                                    "scheme",
+                                    ""
+                                ),
+
+                            "Country":
                                 match.get(
-                                    "docTypes",
-                                    []
+                                    "countryCode",
+                                    ""
+                                ),
+
+                            "Document Types":
+                                len(
+                                    match.get(
+                                        "docTypes",
+                                        []
+                                    )
                                 )
-                            )
+
                         })
 
                 else:
 
                     all_results.append({
-                        "Search Value": search_term,
-                        "Company Name": "NOT FOUND"
+
+                        "Search Value":
+                            search_term,
+
+                        "Company Name":
+                            "NOT FOUND",
+
+                        "Participant ID":
+                            "",
+
+                        "Scheme":
+                            "",
+
+                        "Country":
+                            "",
+
+                        "Document Types":
+                            ""
+
                     })
 
             except Exception as e:
 
                 all_results.append({
-                    "Search Value": search_term,
-                    "Company Name": f"ERROR: {e}"
+
+                    "Search Value":
+                        search_term,
+
+                    "Company Name":
+                        f"ERROR: {str(e)}",
+
+                    "Participant ID":
+                        "",
+
+                    "Scheme":
+                        "",
+
+                    "Country":
+                        "",
+
+                    "Document Types":
+                        ""
+
                 })
 
-            progress_bar.progress(
+            progress.progress(
                 (index + 1) / total_rows
             )
 
@@ -278,9 +345,14 @@ if uploaded_file:
             all_results
         )
 
+        st.success(
+            f"{len(results_df)} rows returned"
+        )
+
         st.dataframe(
             results_df,
-            use_container_width=True
+            use_container_width=True,
+            height=600
         )
 
         csv = results_df.to_csv(
@@ -288,7 +360,7 @@ if uploaded_file:
         )
 
         st.download_button(
-            "Download Bulk Results",
+            "⬇ Download Bulk Results",
             csv,
             "peppol_bulk_results.csv",
             "text/csv"
