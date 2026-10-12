@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 from urllib.parse import quote
 
 st.set_page_config(
@@ -9,6 +10,61 @@ st.set_page_config(
 )
 
 st.title("🔍 Peppol Endpoint Finder")
+
+# --------------------------
+# FUNCTIONS
+# --------------------------
+
+def extract_links(html):
+    soup = BeautifulSoup(html, "html.parser")
+
+    results = []
+
+    for link in soup.find_all("a", href=True):
+
+        text = link.get_text(strip=True)
+
+        href = link["href"]
+
+        results.append({
+            "Text": text,
+            "Link": href
+        })
+
+    return results
+
+
+def test_search(search_value, environment):
+
+    if environment == "PROD":
+        base_url = (
+            "https://directory.peppol.eu/public/locale-en_US/menuitem-search"
+        )
+    else:
+        base_url = (
+            "https://test-directory.peppol.eu/public/locale-en_US/menuitem-search"
+        )
+
+    encoded_value = quote(search_value)
+
+    search_url = (
+        f"{base_url}?q={encoded_value}&country="
+    )
+
+    response = requests.get(
+        search_url,
+        timeout=30,
+        headers={
+            "User-Agent": "Mozilla/5.0"
+        }
+    )
+
+    return search_url, response
+
+
+# --------------------------
+# SEARCH SECTION
+# --------------------------
 
 environment = st.radio(
     "Environment",
@@ -29,36 +85,24 @@ search_value = st.text_input(
     "Enter Search Value"
 )
 
-if environment == "PROD":
-    base_url = "https://directory.peppol.eu/public/locale-en_US/menuitem-search"
-else:
-    base_url = "https://test-directory.peppol.eu/public/locale-en_US/menuitem-search"
-
 if st.button("Search"):
 
-    if search_value:
-
-        encoded_value = quote(search_value)
-
-        search_url = (
-            f"{base_url}?q={encoded_value}&country="
-        )
-
-        st.subheader("Generated URL")
-
-        st.code(search_url)
-
-        st.write(search_url)
+    if not search_value:
+        st.warning("Please enter a value.")
+    else:
 
         try:
 
-            response = requests.get(
-                search_url,
-                timeout=20,
-                headers={
-                    "User-Agent": "Mozilla/5.0"
-                }
+            search_url, response = test_search(
+                search_value,
+                environment
             )
+
+            st.subheader("Generated URL")
+
+            st.code(search_url)
+
+            st.markdown(search_url)
 
             st.subheader("Connection Test")
 
@@ -70,14 +114,36 @@ if st.button("Search"):
                 f"Response Size: {len(response.text):,} characters"
             )
 
-            with st.expander(
-                "Show First 3000 Characters"
-            ):
-                st.text(response.text[:3000])
+            links = extract_links(response.text)
+
+            st.subheader("Links Found")
+
+            st.write(
+                f"Total Links Found: {len(links)}"
+            )
+
+            if len(links) > 0:
+
+                st.dataframe(
+                    pd.DataFrame(links),
+                    use_container_width=True
+                )
+
+            with st.expander("Show First 3000 Characters"):
+
+                st.text(
+                    response.text[:3000]
+                )
 
         except Exception as e:
 
-            st.error(f"Error: {e}")
+            st.error(
+                f"Error: {str(e)}"
+            )
+
+# --------------------------
+# BULK UPLOAD
+# --------------------------
 
 st.divider()
 
@@ -101,22 +167,33 @@ if uploaded_file:
 
     if st.button("Generate Search Links"):
 
+        if environment == "PROD":
+            base_url = (
+                "https://directory.peppol.eu/public/locale-en_US/menuitem-search"
+            )
+        else:
+            base_url = (
+                "https://test-directory.peppol.eu/public/locale-en_US/menuitem-search"
+            )
+
         results = []
 
         for _, row in df.iterrows():
 
-            search_val = str(row.iloc[0]).strip()
+            value = str(
+                row.iloc[0]
+            ).strip()
 
-            encoded_value = quote(search_val)
+            encoded_value = quote(value)
 
-            search_url = (
-                f"{base_url}?q={encoded_value}&country="
+            results.append(
+                {
+                    "Search Value": value,
+                    "Search URL": (
+                        f"{base_url}?q={encoded_value}&country="
+                    )
+                }
             )
-
-            results.append({
-                "Search Value": search_val,
-                "Peppol URL": search_url
-            })
 
         result_df = pd.DataFrame(results)
 
@@ -125,14 +202,20 @@ if uploaded_file:
             use_container_width=True
         )
 
-        csv = result_df.to_csv(index=False)
+        csv = result_df.to_csv(
+            index=False
+        )
 
         st.download_button(
-            label="Download Results",
-            data=csv,
-            file_name="peppol_links.csv",
-            mime="text/csv"
+            "Download Results",
+            csv,
+            "peppol_search_links.csv",
+            "text/csv"
         )
+
+# --------------------------
+# CONNECTIVITY TEST
+# --------------------------
 
 st.divider()
 
@@ -140,9 +223,18 @@ if st.button("Test Peppol Connectivity"):
 
     try:
 
+        if environment == "PROD":
+            url = (
+                "https://directory.peppol.eu/public/locale-en_US/menuitem-search"
+            )
+        else:
+            url = (
+                "https://test-directory.peppol.eu/public/locale-en_US/menuitem-search"
+            )
+
         response = requests.get(
-            base_url,
-            timeout=20,
+            url,
+            timeout=30,
             headers={
                 "User-Agent": "Mozilla/5.0"
             }
@@ -154,4 +246,6 @@ if st.button("Test Peppol Connectivity"):
 
     except Exception as e:
 
-        st.error(f"Connection failed: {e}")
+        st.error(
+            f"Connection Failed: {str(e)}"
+        )
