@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 from urllib.parse import quote
 
 st.set_page_config(
@@ -11,139 +10,162 @@ st.set_page_config(
 
 st.title("🔍 Peppol Endpoint Finder")
 
-# --------------------------
-# FUNCTIONS
-# --------------------------
-
-def extract_links(html):
-    soup = BeautifulSoup(html, "html.parser")
-
-    results = []
-
-    for link in soup.find_all("a", href=True):
-
-        text = link.get_text(strip=True)
-
-        href = link["href"]
-
-        results.append({
-            "Text": text,
-            "Link": href
-        })
-
-    return results
-
-
-def test_search(search_value, environment):
-
-    if environment == "PROD":
-        base_url = (
-            "https://directory.peppol.eu/public/locale-en_US/menuitem-search"
-        )
-    else:
-        base_url = (
-            "https://test-directory.peppol.eu/public/locale-en_US/menuitem-search"
-        )
-
-    encoded_value = quote(search_value)
-
-    search_url = (
-        f"{base_url}?q={encoded_value}&country="
-    )
-
-    response = requests.get(
-        search_url,
-        timeout=30,
-        headers={
-            "User-Agent": "Mozilla/5.0"
-        }
-    )
-
-    return search_url, response
-
-
-# --------------------------
-# SEARCH SECTION
-# --------------------------
-
 environment = st.radio(
     "Environment",
     ["PROD", "TEST"],
     horizontal=True
 )
 
-search_type = st.selectbox(
-    "Search By",
-    [
-        "Customer Name",
-        "VAT Number",
-        "Participant ID / Org ID"
-    ]
+search_value = st.text_input(
+    "Customer Name / VAT / Participant ID"
 )
 
-search_value = st.text_input(
-    "Enter Search Value"
-)
+
+def get_api_url(search_term, env):
+    search_term = quote(search_term)
+
+    if env == "PROD":
+        return (
+            f"https://directory.peppol.eu/"
+            f"search/1.0/json?q={search_term}"
+        )
+
+    return (
+        f"https://test-directory.peppol.eu/"
+        f"search/1.0/json?q={search_term}"
+    )
+
+
+def search_peppol(search_term, env):
+
+    url = get_api_url(search_term, env)
+
+    response = requests.get(
+        url,
+        timeout=30,
+        headers={
+            "User-Agent": "Mozilla/5.0"
+        }
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+
+# ------------------------
+# SINGLE SEARCH
+# ------------------------
 
 if st.button("Search"):
 
-    if not search_value:
-        st.warning("Please enter a value.")
-    else:
+    if search_value:
 
         try:
 
-            search_url, response = test_search(
+            data = search_peppol(
                 search_value,
                 environment
             )
 
-            st.subheader("Generated URL")
+            matches = data.get(
+                "matches",
+                []
+            )
 
-            st.code(search_url)
+            results = []
 
-            st.markdown(search_url)
+            for match in matches:
 
-            st.subheader("Connection Test")
+                participant = match.get(
+                    "participantID",
+                    {}
+                )
+
+                entities = match.get(
+                    "entities",
+                    []
+                )
+
+                entity_name = ""
+
+                if entities:
+                    names = entities[0].get(
+                        "name",
+                        []
+                    )
+
+                    if names:
+                        entity_name = names[0].get(
+                            "name",
+                            ""
+                        )
+
+                results.append({
+
+                    "Company Name":
+                        entity_name,
+
+                    "Participant ID":
+                        participant.get(
+                            "value",
+                            ""
+                        ),
+
+                    "Scheme":
+                        participant.get(
+                            "scheme",
+                            ""
+                        ),
+
+                    "Country":
+                        match.get(
+                            "countryCode",
+                            ""
+                        ),
+
+                    "Doc Type Count":
+                        len(
+                            match.get(
+                                "docTypes",
+                                []
+                            )
+                        )
+
+                })
+
+            result_df = pd.DataFrame(
+                results
+            )
 
             st.success(
-                f"Status Code: {response.status_code}"
+                f"{len(result_df)} result(s) found"
             )
 
-            st.write(
-                f"Response Size: {len(response.text):,} characters"
+            st.dataframe(
+                result_df,
+                use_container_width=True
             )
 
-            links = extract_links(response.text)
-
-            st.subheader("Links Found")
-
-            st.write(
-                f"Total Links Found: {len(links)}"
+            csv = result_df.to_csv(
+                index=False
             )
 
-            if len(links) > 0:
-
-                st.dataframe(
-                    pd.DataFrame(links),
-                    use_container_width=True
-                )
-
-            with st.expander("Show First 3000 Characters"):
-
-                st.text(
-                    response.text[:3000]
-                )
+            st.download_button(
+                "Download Results",
+                csv,
+                "peppol_results.csv",
+                "text/csv"
+            )
 
         except Exception as e:
 
-            st.error(
-                f"Error: {str(e)}"
-            )
+            st.error(str(e))
 
-# --------------------------
-# BULK UPLOAD
-# --------------------------
+
+# ------------------------
+# BULK SEARCH
+# ------------------------
 
 st.divider()
 
@@ -161,41 +183,139 @@ if uploaded_file:
     else:
         df = pd.read_excel(uploaded_file)
 
-    st.write("Preview")
-
     st.dataframe(df)
 
-    if st.button("Generate Search Links"):
+    if st.button("Lookup All"):
 
-        if environment == "PROD":
-            base_url = (
-                "https://directory.peppol.eu/public/locale-en_US/menuitem-search"
-            )
-        else:
-            base_url = (
-                "https://test-directory.peppol.eu/public/locale-en_US/menuitem-search"
-            )
+        all_results = []
 
-        results = []
+        progress = st.progress(0)
 
-        for _, row in df.iterrows():
+        total = len(df)
 
-            value = str(
+        for index, row in df.iterrows():
+
+            search_term = str(
                 row.iloc[0]
             ).strip()
 
-            encoded_value = quote(value)
+            try:
 
-            results.append(
-                {
-                    "Search Value": value,
-                    "Search URL": (
-                        f"{base_url}?q={encoded_value}&country="
-                    )
-                }
+                data = search_peppol(
+                    search_term,
+                    environment
+                )
+
+                matches = data.get(
+                    "matches",
+                    []
+                )
+
+                if matches:
+
+                    for match in matches:
+
+                        participant = match.get(
+                            "participantID",
+                            {}
+                        )
+
+                        entities = match.get(
+                            "entities",
+                            []
+                        )
+
+                        entity_name = ""
+
+                        if entities:
+                            names = entities[0].get(
+                                "name",
+                                []
+                            )
+
+                            if names:
+                                entity_name = names[0].get(
+                                    "name",
+                                    ""
+                                )
+
+                        all_results.append({
+
+                            "Search Value":
+                                search_term,
+
+                            "Company Name":
+                                entity_name,
+
+                            "Participant ID":
+                                participant.get(
+                                    "value",
+                                    ""
+                                ),
+
+                            "Scheme":
+                                participant.get(
+                                    "scheme",
+                                    ""
+                                ),
+
+                            "Country":
+                                match.get(
+                                    "countryCode",
+                                    ""
+                                )
+
+                        })
+
+                else:
+
+                    all_results.append({
+
+                        "Search Value":
+                            search_term,
+
+                        "Company Name":
+                            "NOT FOUND",
+
+                        "Participant ID":
+                            "",
+
+                        "Scheme":
+                            "",
+
+                        "Country":
+                            ""
+
+                    })
+
+            except Exception:
+
+                all_results.append({
+
+                    "Search Value":
+                        search_term,
+
+                    "Company Name":
+                        "ERROR",
+
+                    "Participant ID":
+                        "",
+
+                    "Scheme":
+                        "",
+
+                    "Country":
+                        ""
+
+                })
+
+            progress.progress(
+                (index + 1) / total
             )
 
-        result_df = pd.DataFrame(results)
+        result_df = pd.DataFrame(
+            all_results
+        )
 
         st.dataframe(
             result_df,
@@ -207,45 +327,8 @@ if uploaded_file:
         )
 
         st.download_button(
-            "Download Results",
+            "Download Excel Results",
             csv,
-            "peppol_search_links.csv",
+            "peppol_bulk_results.csv",
             "text/csv"
-        )
-
-# --------------------------
-# CONNECTIVITY TEST
-# --------------------------
-
-st.divider()
-
-if st.button("Test Peppol Connectivity"):
-
-    try:
-
-        if environment == "PROD":
-            url = (
-                "https://directory.peppol.eu/public/locale-en_US/menuitem-search"
-            )
-        else:
-            url = (
-                "https://test-directory.peppol.eu/public/locale-en_US/menuitem-search"
-            )
-
-        response = requests.get(
-            url,
-            timeout=30,
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            }
-        )
-
-        st.success(
-            f"Connected Successfully ({response.status_code})"
-        )
-
-    except Exception as e:
-
-        st.error(
-            f"Connection Failed: {str(e)}"
         )
