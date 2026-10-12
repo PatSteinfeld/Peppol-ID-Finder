@@ -21,41 +21,57 @@ search_value = st.text_input(
 )
 
 
-def get_api_url(search_term, env):
-    search_term = quote(search_term)
-
-    if env == "PROD":
-        return (
-            f"https://directory.peppol.eu/"
-            f"search/1.0/json?q={search_term}"
-        )
-
-    return (
-        f"https://test-directory.peppol.eu/"
-        f"search/1.0/json?q={search_term}"
-    )
-
-
 def search_peppol(search_term, env):
 
-    url = get_api_url(search_term, env)
+    if env == "PROD":
+        base_url = "https://directory.peppol.eu/search/1.0/json"
+    else:
+        base_url = "https://test-directory.peppol.eu/search/1.0/json"
 
-    response = requests.get(
-        url,
-        timeout=30,
-        headers={
-            "User-Agent": "Mozilla/5.0"
-        }
-    )
+    all_matches = []
+    page = 0
 
-    response.raise_for_status()
+    while True:
 
-    return response.json()
+        url = (
+            f"{base_url}?q={quote(search_term)}&page={page}"
+        )
+
+        response = requests.get(
+            url,
+            timeout=30,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        matches = data.get("matches", [])
+
+        if not matches:
+            break
+
+        all_matches.extend(matches)
+
+        st.write(
+            f"Loaded page {page + 1} ({len(matches)} results)"
+        )
+
+        # API returns 20 results per page
+        if len(matches) < 20:
+            break
+
+        page += 1
+
+    return all_matches
 
 
-# ------------------------
+# ====================================
 # SINGLE SEARCH
-# ------------------------
+# ====================================
 
 if st.button("Search"):
 
@@ -63,14 +79,9 @@ if st.button("Search"):
 
         try:
 
-            data = search_peppol(
+            matches = search_peppol(
                 search_value,
                 environment
-            )
-
-            matches = data.get(
-                "matches",
-                []
             )
 
             results = []
@@ -82,61 +93,49 @@ if st.button("Search"):
                     {}
                 )
 
+                company_name = ""
+
                 entities = match.get(
                     "entities",
                     []
                 )
 
-                entity_name = ""
-
                 if entities:
+
                     names = entities[0].get(
                         "name",
                         []
                     )
 
                     if names:
-                        entity_name = names[0].get(
+                        company_name = names[0].get(
                             "name",
                             ""
                         )
 
                 results.append({
-
-                    "Company Name":
-                        entity_name,
-
-                    "Participant ID":
-                        participant.get(
-                            "value",
-                            ""
-                        ),
-
-                    "Scheme":
-                        participant.get(
-                            "scheme",
-                            ""
-                        ),
-
-                    "Country":
+                    "Company Name": company_name,
+                    "Participant ID": participant.get(
+                        "value",
+                        ""
+                    ),
+                    "Scheme": participant.get(
+                        "scheme",
+                        ""
+                    ),
+                    "Country": match.get(
+                        "countryCode",
+                        ""
+                    ),
+                    "Doc Type Count": len(
                         match.get(
-                            "countryCode",
-                            ""
-                        ),
-
-                    "Doc Type Count":
-                        len(
-                            match.get(
-                                "docTypes",
-                                []
-                            )
+                            "docTypes",
+                            []
                         )
-
+                    )
                 })
 
-            result_df = pd.DataFrame(
-                results
-            )
+            result_df = pd.DataFrame(results)
 
             st.success(
                 f"{len(result_df)} result(s) found"
@@ -163,12 +162,11 @@ if st.button("Search"):
             st.error(str(e))
 
 
-# ------------------------
+# ====================================
 # BULK SEARCH
-# ------------------------
+# ====================================
 
 st.divider()
-
 st.subheader("Bulk Upload")
 
 uploaded_file = st.file_uploader(
@@ -189,9 +187,9 @@ if uploaded_file:
 
         all_results = []
 
-        progress = st.progress(0)
+        progress_bar = st.progress(0)
 
-        total = len(df)
+        total_rows = len(df)
 
         for index, row in df.iterrows():
 
@@ -201,14 +199,9 @@ if uploaded_file:
 
             try:
 
-                data = search_peppol(
+                matches = search_peppol(
                     search_term,
                     environment
-                )
-
-                matches = data.get(
-                    "matches",
-                    []
                 )
 
                 if matches:
@@ -220,114 +213,82 @@ if uploaded_file:
                             {}
                         )
 
+                        company_name = ""
+
                         entities = match.get(
                             "entities",
                             []
                         )
 
-                        entity_name = ""
-
                         if entities:
+
                             names = entities[0].get(
                                 "name",
                                 []
                             )
 
                             if names:
-                                entity_name = names[0].get(
+                                company_name = names[0].get(
                                     "name",
                                     ""
                                 )
 
                         all_results.append({
-
-                            "Search Value":
-                                search_term,
-
-                            "Company Name":
-                                entity_name,
-
-                            "Participant ID":
-                                participant.get(
-                                    "value",
-                                    ""
-                                ),
-
-                            "Scheme":
-                                participant.get(
-                                    "scheme",
-                                    ""
-                                ),
-
-                            "Country":
+                            "Search Value": search_term,
+                            "Company Name": company_name,
+                            "Participant ID": participant.get(
+                                "value",
+                                ""
+                            ),
+                            "Scheme": participant.get(
+                                "scheme",
+                                ""
+                            ),
+                            "Country": match.get(
+                                "countryCode",
+                                ""
+                            ),
+                            "Doc Type Count": len(
                                 match.get(
-                                    "countryCode",
-                                    ""
+                                    "docTypes",
+                                    []
                                 )
-
+                            )
                         })
 
                 else:
 
                     all_results.append({
-
-                        "Search Value":
-                            search_term,
-
-                        "Company Name":
-                            "NOT FOUND",
-
-                        "Participant ID":
-                            "",
-
-                        "Scheme":
-                            "",
-
-                        "Country":
-                            ""
-
+                        "Search Value": search_term,
+                        "Company Name": "NOT FOUND"
                     })
 
-            except Exception:
+            except Exception as e:
 
                 all_results.append({
-
-                    "Search Value":
-                        search_term,
-
-                    "Company Name":
-                        "ERROR",
-
-                    "Participant ID":
-                        "",
-
-                    "Scheme":
-                        "",
-
-                    "Country":
-                        ""
-
+                    "Search Value": search_term,
+                    "Company Name": f"ERROR: {e}"
                 })
 
-            progress.progress(
-                (index + 1) / total
+            progress_bar.progress(
+                (index + 1) / total_rows
             )
 
-        result_df = pd.DataFrame(
+        results_df = pd.DataFrame(
             all_results
         )
 
         st.dataframe(
-            result_df,
+            results_df,
             use_container_width=True
         )
 
-        csv = result_df.to_csv(
+        csv = results_df.to_csv(
             index=False
         )
 
         st.download_button(
-            "Download Excel Results",
+            "Download Bulk Results",
             csv,
             "peppol_bulk_results.csv",
             "text/csv"
