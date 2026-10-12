@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Peppol Endpoint Finder")
 
@@ -12,23 +14,46 @@ environment = st.radio(
 
 customer_name = st.text_input("Customer Name")
 
-if st.button("Search"):
-    st.success(
-        f"Searching for '{customer_name}' in {environment}"
+
+def search_peppol(customer, env):
+
+    if env == "PROD":
+        url = (
+            "https://directory.peppol.eu/public/locale-en_US/"
+            f"menuitem-search?q={customer}&country="
+        )
+    else:
+        url = (
+            "https://test-directory.peppol.eu/public/locale-en_US/"
+            f"menuitem-search?q={customer}&country="
+        )
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=20
     )
 
-uploaded_file = st.file_uploader(
-    "Upload Excel",
-    type=["xlsx", "csv"]
-)
+    return response.text
 
-if uploaded_file:
 
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
+if st.button("Search"):
 
-    st.write("Preview")
+    with st.spinner("Searching PEPPOL..."):
 
-    st.dataframe(df)
+        html = search_peppol(
+            customer_name,
+            environment
+        )
+
+        st.success("Search completed")
+
+        st.text_area(
+            "Returned HTML (first 5000 chars)",
+            html[:5000],
+            height=400
+        )
