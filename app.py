@@ -48,9 +48,7 @@ if st.button("Search"):
 
         st.code(search_url)
 
-        st.markdown(
-            f"[search_url}"
-        )
+        st.write(search_url)
 
         try:
 
@@ -79,7 +77,7 @@ if st.button("Search"):
 
         except Exception as e:
 
-            st.error(str(e))
+            st.error(f"Error: {e}")
 
 st.divider()
 
@@ -107,22 +105,18 @@ if uploaded_file:
 
         for _, row in df.iterrows():
 
-            search_value = str(
-                row.iloc[0]
-            ).strip()
+            search_val = str(row.iloc[0]).strip()
 
-            encoded_value = quote(search_value)
+            encoded_value = quote(search_val)
 
             search_url = (
                 f"{base_url}?q={encoded_value}&country="
             )
 
-            results.append(
-                {
-                    "Search Value": search_value,
-                    "Peppol URL": search_url
-                }
-            )
+            results.append({
+                "Search Value": search_val,
+                "Peppol URL": search_url
+            })
 
         result_df = pd.DataFrame(results)
 
@@ -131,15 +125,13 @@ if uploaded_file:
             use_container_width=True
         )
 
-        csv = result_df.to_csv(
-            index=False
-        )
+        csv = result_df.to_csv(index=False)
 
         st.download_button(
-            "Download Results",
-            csv,
-            "peppol_links.csv",
-            "text/csv"
+            label="Download Results",
+            data=csv,
+            file_name="peppol_links.csv",
+            mime="text/csv"
         )
 
 st.divider()
@@ -162,4 +154,4 @@ if st.button("Test Peppol Connectivity"):
 
     except Exception as e:
 
-        st.error(str(e))
+        st.error(f"Connection failed: {e}")
