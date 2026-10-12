@@ -52,8 +52,13 @@ if st.button("Search"):
 
         st.success("Search completed")
 
+        if customer_name.lower() in html.lower():
+            st.write("Search term found in response")
+        else:
+            st.write("Search term NOT found in response")
+
         st.text_area(
-            "Returned HTML (first 5000 chars)",
-            html[:5000],
-            height=400
+            "Returned HTML",
+            html,
+            height=600
         )
