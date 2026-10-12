@@ -1,64 +1,165 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
+from urllib.parse import quote
 
-st.set_page_config(page_title="Peppol Endpoint Finder")
+st.set_page_config(
+    page_title="Peppol Endpoint Finder",
+    layout="wide"
+)
 
 st.title("🔍 Peppol Endpoint Finder")
 
 environment = st.radio(
     "Environment",
-    ["PROD", "TEST"]
+    ["PROD", "TEST"],
+    horizontal=True
 )
 
-customer_name = st.text_input("Customer Name")
+search_type = st.selectbox(
+    "Search By",
+    [
+        "Customer Name",
+        "VAT Number",
+        "Participant ID / Org ID"
+    ]
+)
 
+search_value = st.text_input(
+    "Enter Search Value"
+)
 
-def search_peppol(customer, env):
-
-    if env == "PROD":
-        url = (
-            "https://directory.peppol.eu/public/locale-en_US/"
-            f"menuitem-search?q={customer}&country="
-        )
-    else:
-        url = (
-            "https://test-directory.peppol.eu/public/locale-en_US/"
-            f"menuitem-search?q={customer}&country="
-        )
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    response = requests.get(
-        url,
-        headers=headers,
-        timeout=20
-    )
-
-    return response.text
-
+if environment == "PROD":
+    base_url = "https://directory.peppol.eu/public/locale-en_US/menuitem-search"
+else:
+    base_url = "https://test-directory.peppol.eu/public/locale-en_US/menuitem-search"
 
 if st.button("Search"):
 
-    with st.spinner("Searching PEPPOL..."):
+    if search_value:
 
-        html = search_peppol(
-            customer_name,
-            environment
+        encoded_value = quote(search_value)
+
+        search_url = (
+            f"{base_url}?q={encoded_value}&country="
         )
 
-        st.success("Search completed")
+        st.subheader("Generated URL")
 
-        if customer_name.lower() in html.lower():
-            st.write("Search term found in response")
-        else:
-            st.write("Search term NOT found in response")
+        st.code(search_url)
 
-        st.text_area(
-            "Returned HTML",
-            html,
-            height=600
+        st.markdown(
+            f"[search_url}"
         )
+
+        try:
+
+            response = requests.get(
+                search_url,
+                timeout=20,
+                headers={
+                    "User-Agent": "Mozilla/5.0"
+                }
+            )
+
+            st.subheader("Connection Test")
+
+            st.success(
+                f"Status Code: {response.status_code}"
+            )
+
+            st.write(
+                f"Response Size: {len(response.text):,} characters"
+            )
+
+            with st.expander(
+                "Show First 3000 Characters"
+            ):
+                st.text(response.text[:3000])
+
+        except Exception as e:
+
+            st.error(str(e))
+
+st.divider()
+
+st.subheader("Bulk Upload")
+
+uploaded_file = st.file_uploader(
+    "Upload Excel or CSV",
+    type=["xlsx", "csv"]
+)
+
+if uploaded_file:
+
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
+
+    st.write("Preview")
+
+    st.dataframe(df)
+
+    if st.button("Generate Search Links"):
+
+        results = []
+
+        for _, row in df.iterrows():
+
+            search_value = str(
+                row.iloc[0]
+            ).strip()
+
+            encoded_value = quote(search_value)
+
+            search_url = (
+                f"{base_url}?q={encoded_value}&country="
+            )
+
+            results.append(
+                {
+                    "Search Value": search_value,
+                    "Peppol URL": search_url
+                }
+            )
+
+        result_df = pd.DataFrame(results)
+
+        st.dataframe(
+            result_df,
+            use_container_width=True
+        )
+
+        csv = result_df.to_csv(
+            index=False
+        )
+
+        st.download_button(
+            "Download Results",
+            csv,
+            "peppol_links.csv",
+            "text/csv"
+        )
+
+st.divider()
+
+if st.button("Test Peppol Connectivity"):
+
+    try:
+
+        response = requests.get(
+            base_url,
+            timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
+
+        st.success(
+            f"Connected Successfully ({response.status_code})"
+        )
+
+    except Exception as e:
+
+        st.error(str(e))
