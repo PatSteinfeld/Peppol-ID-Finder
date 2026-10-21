@@ -3,4 +3,8 @@ pandas
 openpyxl
 requests
 beautifulsoup4
+streamlit>=1.50
+pandas>=2.0
+requests>=2.31
+urllib3>=1.26
 openpyxl>=3.1
