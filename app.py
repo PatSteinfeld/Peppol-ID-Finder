@@ -190,7 +190,7 @@ def mark_best(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns="_rank")
 
 
-def build_df(results: dict, terms: list[str]) -> pd.DataFrame:
+def build_df(results: dict, terms: list[str], first_row: dict | None = None) -> pd.DataFrame:
     """Combine per-term rows (in input order) into one tidy DataFrame."""
     rows = [r for t in terms if t in results for r in results[t]]
     if not rows:
@@ -200,9 +200,11 @@ def build_df(results: dict, terms: list[str]) -> pd.DataFrame:
         ranked = mark_best(df[df["_rank"].notna()].copy())
         unranked = df[df["_rank"].isna()].drop(columns="_rank")
         df = pd.concat([ranked, unranked], ignore_index=True)
+    if first_row:
+        df["Input Row"] = df["Search Value"].map(first_row)
     order = {t: i for i, t in enumerate(terms)}
     df = df.sort_values("Search Value", key=lambda s: s.map(order), kind="stable")
-    first = ["Search Value", "Status", "Best Match", "Match Type"]
+    first = ["Input Row", "Search Value", "Status", "Best Match", "Match Type"]
     df = df[[c for c in first if c in df] + [c for c in df if c not in first]]
     return df.fillna("")
 
@@ -235,6 +237,10 @@ def search_one(term: str, env: str, country: str, size: int, max_pages: int, cac
         return [{"Search Value": term, "Status": f"ERROR (parsing): {e}"}]
 
 
+def has_error(rows: list[dict]) -> bool:
+    return any(str(r.get("Status", "")).startswith("ERROR") for r in rows)
+
+
 # =====================================================
 # SETTINGS
 # =====================================================
@@ -257,7 +263,8 @@ with st.expander("Search settings"):
     if st.button("Clear lookup cache"):
         with cache["lock"]:
             cache["data"].clear()
-        st.toast("Cache cleared")
+        st.session_state["bulk_store"] = {}
+        st.toast("Cache and bulk results cleared")
 
 # =====================================================
 # SINGLE SEARCH
@@ -301,7 +308,7 @@ if single:
                            "peppol_results.csv", "text/csv")
 
 # =====================================================
-# BULK SEARCH
+# BULK SEARCH (row ranges / batches)
 # =====================================================
 
 st.divider()
@@ -325,60 +332,110 @@ if uploaded:
     column = st.selectbox("Column to search", in_df.columns, index=0)
 
     raw_terms = [str(v).strip() for v in in_df[column]]
-    terms = list(dict.fromkeys(t for t in raw_terms if t and t.lower() != "nan"))
+    n_rows = len(raw_terms)
+    if n_rows == 0:
+        st.warning("The file has no data rows.")
+        st.stop()
 
-    with cache["lock"]:
-        cached_n = sum(
-            1 for t in terms
-            if (t.casefold(), environment, country_filter, bulk_size, 1) in cache["data"]
-        )
-    st.write(
-        f"{len(raw_terms)} rows, {len(terms)} unique values to look up "
-        f"({cached_n} already cached)."
-    )
+    def valid(t: str) -> bool:
+        return bool(t) and t.lower() != "nan"
+
+    # Unique non-empty values in file order, plus the first file row each appears in
+    all_terms: list[str] = []
+    first_row: dict[str, int] = {}
+    for i, t in enumerate(raw_terms, start=1):
+        if valid(t) and t not in first_row:
+            first_row[t] = i
+            all_terms.append(t)
+
+    st.write(f"{n_rows} data rows in file, {len(all_terms)} unique values.")
     st.dataframe(in_df.head(20), width="stretch")
 
-    if st.button("Lookup All") and terms:
-        results: dict[str, list] = {}
-        progress = st.progress(0.0, text="Starting...")
-        live = st.empty()
-        pool = ThreadPoolExecutor(max_workers=workers)
-        try:
-            futures = [
-                pool.submit(search_one, t, environment, country_filter, bulk_size, 1, cache)
-                for t in terms
-            ]
-            for done, fut in enumerate(as_completed(futures), start=1):
-                rows = fut.result()
-                results[rows[0]["Search Value"]] = rows
-                progress.progress(done / len(terms), text=f"{done}/{len(terms)} looked up")
-                if done % 10 == 0:
-                    live.dataframe(build_df(results, terms).tail(15), width="stretch")
-        finally:
-            # Runs even if the script is interrupted (e.g. by a widget click): keep what we have
-            pool.shutdown(wait=False, cancel_futures=True)
-            partial = build_df(results, terms)
-            st.session_state["bulk"] = {
-                "df": partial,
-                "n_terms": len(terms),
-                "n_done": len(results),
-            }
-        live.empty()
+    # ---- Row range selector ----
+    st.markdown("**Choose the rows to look up** (row numbers of the data rows, header excluded)")
+    kfx = f"{uploaded.name}_{n_rows}"
+    r1, r2 = st.columns(2)
+    start = int(r1.number_input("From row", min_value=1, max_value=n_rows, value=1,
+                                step=1, key=f"from_{kfx}"))
+    end = int(r2.number_input("To row", min_value=1, max_value=n_rows, value=min(500, n_rows),
+                              step=1, key=f"to_{kfx}"))
+    if start > end:
+        st.error("'From row' must be less than or equal to 'To row'.")
+        st.stop()
 
-bulk = st.session_state.get("bulk")
-if bulk and not bulk["df"].empty:
-    df = bulk["df"]
-    n_nf = int((df["Status"] == "NOT FOUND").sum())
-    n_err = int(df["Status"].astype(str).str.startswith("ERROR").sum())
-    msg = (f"{bulk['n_done']}/{bulk['n_terms']} values looked up -> {len(df)} rows "
-           f"({n_nf} not found, {n_err} errors)")
-    if bulk["n_done"] < bulk["n_terms"]:
-        st.warning(msg + ". Run was interrupted - click Lookup All again to resume "
-                         "(finished values are cached).")
+    range_terms = list(dict.fromkeys(t for t in raw_terms[start - 1:end] if valid(t)))
+
+    # Results are stored per (environment, country, size) so settings changes never mix results
+    ctx = (environment, country_filter, bulk_size)
+    if "bulk_store" not in st.session_state:
+        st.session_state["bulk_store"] = {}
+    results: dict[str, list] = st.session_state["bulk_store"].setdefault(ctx, {})
+
+    def is_done(t: str) -> bool:
+        return t in results and not has_error(results[t])
+
+    todo = [t for t in range_terms if not is_done(t)]
+    done_total = sum(is_done(t) for t in all_terms)
+    st.caption(
+        f"Rows {start}-{end}: {len(range_terms)} unique values, "
+        f"{len(range_terms) - len(todo)} already done, {len(todo)} to look up. "
+        f"Overall progress: {done_total}/{len(all_terms)} values done."
+    )
+
+    if st.button(f"Lookup rows {start}-{end}"):
+        if not todo:
+            st.info("Everything in this range is already done. Download it below.")
+        else:
+            progress = st.progress(0.0, text="Starting...")
+            live = st.empty()
+            pool = ThreadPoolExecutor(max_workers=workers)
+            try:
+                futures = [
+                    pool.submit(search_one, t, environment, country_filter, bulk_size, 1, cache)
+                    for t in todo
+                ]
+                for done, fut in enumerate(as_completed(futures), start=1):
+                    rows = fut.result()
+                    results[rows[0]["Search Value"]] = rows   # saved immediately, survives interruptions
+                    progress.progress(done / len(todo), text=f"{done}/{len(todo)} looked up")
+                    if done % 10 == 0:
+                        live.dataframe(build_df(results, range_terms, first_row).tail(15),
+                                       width="stretch")
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+            live.empty()
+            progress.empty()
+
+    # ---- Results + downloads ----
+    range_df = build_df(results, range_terms, first_row)
+    all_df = build_df(results, all_terms, first_row)
+
+    if range_df.empty:
+        st.info(f"No results yet for rows {start}-{end}. Click the Lookup button.")
     else:
-        st.success(msg)
-    if n_err:
-        st.info("Rows with ERROR are not cached - click Lookup All again to retry only those.")
-    st.dataframe(df, width="stretch", height=600)
-    st.download_button("⬇ Download Bulk Results", to_csv_bytes(df),
-                       "peppol_bulk_results.csv", "text/csv")
+        pending = [t for t in range_terms if not is_done(t)]
+        n_nf = int((range_df["Status"] == "NOT FOUND").sum())
+        n_err = int(range_df["Status"].astype(str).str.startswith("ERROR").sum())
+        msg = (f"Rows {start}-{end}: {len(range_terms) - len(pending)}/{len(range_terms)} values done -> "
+               f"{len(range_df)} rows ({n_nf} not found, {n_err} errors)")
+        if pending:
+            st.warning(msg + f". {len(pending)} values not finished - click Lookup again to "
+                             "resume (finished values are kept; errors are retried).")
+        else:
+            st.success(msg)
+
+        st.dataframe(range_df, width="stretch", height=600)
+
+        d1, d2 = st.columns(2)
+        d1.download_button(
+            f"⬇ Download rows {start}-{end}",
+            to_csv_bytes(range_df),
+            f"peppol_rows_{start}-{end}.csv",
+            "text/csv",
+        )
+        d2.download_button(
+            f"⬇ Download everything done so far ({len(all_terms) and done_total}/{len(all_terms)} values)",
+            to_csv_bytes(all_df),
+            "peppol_all_results.csv",
+            "text/csv",
+        )
